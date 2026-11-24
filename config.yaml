@@ -1,0 +1,24 @@
+app:
+  name: "web_app" #应用名
+  mode: "dev" #运行模式,dev开发/test测试/prod生产
+  port: 8081
+
+
+log:
+  level: "debug" #日志级别:debug < info < warn < error
+  filename: "web_app.log" #日志输出文件路径
+  max_size: 200 #单个日志文件最大多少 MB
+  max_age: 30 #旧日志文件最多保留多少天
+  max_backups: 7 #最多保留多少个历史日志文件
+
+mysql:
+  host: "127.0.0.1"
+  port: 3306
+  user: "root"
+  password: "123456"
+  dbname: "cjh"
+
+redis:
+  host: "127.0.0.1"
+  port: 6379
+  db: 0
