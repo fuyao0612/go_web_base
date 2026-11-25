@@ -1,66 +1,76 @@
+// Package mysql 创建并探测应用共享的 MySQL 连接池。
 package mysql
 
 import (
+	// context 为启动探测提供取消信号和截止时间。
+	"context"
+	// database/sql 提供通用连接池 API，由 MySQL 驱动处理具体协议。
 	"database/sql"
+	// errors.Join 合并连接探测和清理过程中出现的错误。
+	"errors"
+	// fmt 用于包装打开及探测失败的阶段信息。
 	"fmt"
+	// net.JoinHostPort 将主机名或 IP 和端口组成正确的网络地址。
+	"net"
+	// strconv.Itoa 将整数端口转换成地址拼接需要的十进制字符串。
+	"strconv"
+	// time 用于指定建连时间、探测时长和 Go 端解析日期所用的时区。
+	"time"
 
-	"github.com/spf13/viper"
-	"go.uber.org/zap"
+	// 入口传入已读取和校验的 MySQLConfig。
+	"study/settings"
+
+	// 导入驱动会向 database/sql 注册 mysql 名称。别名 mysqlDriver 用来和当前包区分。
+	mysqlDriver "github.com/go-sql-driver/mysql"
 )
 
-// 全局数据库对象：整个程序共享一个 *sql.DB。
-// 注意：*sql.DB 不是"一个连接"，而是"连接池管理器"，
-// 它内部维护着多个连接，并发安全，可以被多个 goroutine 同时使用。
-var db *sql.DB
+// Open 创建连接池并完成启动探测。成功后由调用方负责关闭。
+// *sql.DB 管理多条连接，可以安全地被多个请求共享。
+func Open(ctx context.Context, cfg settings.MySQLConfig) (*sql.DB, error) {
+	// 由驱动构造 DSN，统一编码库名和参数。JoinHostPort 同时支持 IPv4 和 IPv6。
+	// 先创建驱动的默认配置对象。DSN 是后续连接时交给驱动的参数集合。
+	dsn := mysqlDriver.NewConfig()
+	// 设置认证用的 MySQL 用户名。
+	dsn.User = cfg.User
+	// 设置该用户的认证密码。连接串随后会包含密码，不应写入普通日志。
+	dsn.Passwd = cfg.Password
+	// 指定通过 TCP 建连，使 Addr 被解释为主机和端口。
+	dsn.Net = "tcp"
+	// 整数端口先转成字符串。对于 IPv6 地址，JoinHostPort 会添加需要的方括号。
+	dsn.Addr = net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))
+	// 指定建立连接后默认选用的数据库。
+	dsn.DBName = cfg.DBName
+	// 使用 utf8mb4 连接字符集，以传输包括四字节字符在内的 Unicode 文本。
+	dsn.Params = map[string]string{"charset": "utf8mb4"}
+	// 启用日期和时间解析，使支持的日期类型可以读取为 time.Time。
+	dsn.ParseTime = true
+	// 将解析出的时间放在应用机器的本地时区。
+	dsn.Loc = time.Local // 只影响 Go 端时间解析，MySQL 会话时区由服务端配置。
+	// 三秒限制单次 TCP 拨号。下面的探测上下文另管整次启动检查。
+	dsn.Timeout = 3 * time.Second
 
-// Init 按配置创建共享的 MySQL 连接池，验证数据库连通性并设置连接数上限。
-func Init() (err error) {
-	// DSN（Data Source Name）：数据库连接串，格式：
-	//   用户名:密码@tcp(主机地址:端口号)/数据库名?参数
-	// 参数说明：
-	//   charset=utf8mb4  -> 使用 utf8mb4 字符集，支持 emoji 和 4 字节字符
-	//   parseTime=True   -> 把 MySQL 的 DATE/DATETIME/TIMESTAMP 字段自动扫描成 Go 的 time.Time，
-	//                       否则会扫描成 []byte，Scan 到 time.Time 时会报错
-	//   loc=Local        -> 使用应用进程的本地时区解析 time.Time，不会修改数据库会话时区
-	dsn := fmt.Sprintf(
-		"%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
-		viper.GetString("mysql.user"),
-		viper.GetString("mysql.password"),
-		viper.GetString("mysql.host"),
-		viper.GetInt("mysql.port"),
-		viper.GetString("mysql.dbname"),
-	)
-
-	// sql.Open 只是"校验驱动名和 DSN 格式"，并不会真正建立连接。
-	// 真正的连接是在第一次真正执行 SQL / Ping 时才懒加载建立的。
-	// 所以这里返回 err 基本只会在 DSN 格式有误或驱动名写错时出现。
-	db, err = sql.Open("mysql", dsn)
+	// FormatDSN 按驱动规则生成连接串，sql.Open 据此创建连接池句柄。
+	pool, err := sql.Open("mysql", dsn.FormatDSN())
+	// 驱动收到无效参数等问题时，这一步可能失败。
 	if err != nil {
-		zap.L().Error("connect DB failed", zap.Error(err))
-		return
+		// 返回 nil 池和包含阶段的错误，调用方无需登记资源清理。
+		return nil, fmt.Errorf("打开 MySQL 连接池: %w", err)
 	}
+	// 限制池中同时打开的连接总数，0 表示不设上限。
+	pool.SetMaxOpenConns(cfg.MaxOpenConns)
+	// 限制空闲连接保留数量，便于在复用连接和服务端资源之间取舍。
+	pool.SetMaxIdleConns(cfg.MaxIdleConns)
 
-	// Ping 会真正向数据库发起一次连接测试，确认网络、账号、密码、库名是否正确。
-	// 如果这里不 Ping，错误会被延迟到后面第一次查询时才暴露，定位更困难。
-	err = db.Ping()
-	if err != nil {
-		fmt.Println(err)
-		return err
+	// sql.Open 创建池，PingContext 实际验证地址、凭据和数据库是否可用。
+	// 从启动上下文派生五秒探测期限。父上下文提前取消时，探测也应停止。
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// 退出 Open 时释放探测计时器。该 context 仅用于这次 Ping。
+	defer cancel()
+	// PingContext 会实际尝试连接并验证数据库是否可用。if 里的 err 是本次探测的结果。
+	if err := pool.PingContext(probeCtx); err != nil {
+		// 失败时先关闭刚创建的池，再把探测和关闭错误合起来返回。
+		return nil, fmt.Errorf("探测 MySQL 连接: %w", errors.Join(err, pool.Close()))
 	}
-	fmt.Println("good!") // 打印成功标识，证明连接可用
-
-	// 最大打开连接数（连接池最多能同时持有的连接数，含正在使用+空闲）。
-	// 设置过大会打爆数据库，设置过小会造成高并发时排队等待。
-	db.SetMaxOpenConns(viper.GetInt("mysql.max_open_conns"))
-
-	// 最大空闲连接数（连接池空闲时最多保留几个连接）。
-	// 超过这个数量的空闲连接会被关闭，避免资源浪费。
-	// 一般 <= MaxOpenConns。
-	db.SetMaxIdleConns(viper.GetInt("mysql.max_idle_conns"))
-	return
-}
-
-// Close 在 Init 成功后用于关闭共享的 MySQL 连接池。
-func Close() {
-	_ = db.Close()
+	// 成功后把池的所有权交给调用方，由它负责在整个服务退出时调用 Close。
+	return pool, nil
 }

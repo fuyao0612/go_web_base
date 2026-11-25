@@ -1,0 +1,6 @@
+# 本地凭据和默认构建、运行产物。
+.env
+/study.exe
+/web_app.log
+/web_app-*.log
+/dist/
