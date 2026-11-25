@@ -8,7 +8,8 @@ import (
 	"github.com/natefinch/lumberjack"
 )
 
-//接收 viper 里的 4 个日志配置，返回一个 zapcore.WriteSyncer（zap 要求的写入目标类型）
+// getLogWriter 创建支持轮转的日志文件写入器，并适配为 Zap 的写入接口。
+// maxSize 的单位为 MB，maxAge 的单位为天，maxBackups 是保留的备份文件数。
 func getLogWriter(filename string, maxSize, maxBackups, maxAge int) zapcore.WriteSyncer {
 	lumberJackLogger := &lumberjack.Logger{
 		Filename:   filename,
@@ -20,7 +21,7 @@ func getLogWriter(filename string, maxSize, maxBackups, maxAge int) zapcore.Writ
 	return zapcore.AddSync(lumberJackLogger)
 }
 
-// initLogger 初始化自定义 zap 日志器
+// Init 根据 Viper 配置创建 JSON 文件日志器，并替换 Zap 的全局日志器。
 func Init() (err error) {
 	// 1. 编码器（决定日志格式）：基于生产配置微调，把时间和级别改成人类易读格式
 	encoderConfig := zap.NewProductionEncoderConfig()
@@ -61,7 +62,7 @@ func Init() (err error) {
 	return nil
 }
 
-// Sync 导出一个同步函数，由 main 在程序退出前调用
+// Sync 在退出前调用全局日志器的同步方法，并忽略它返回的错误。
 func Sync() {
-	_ = zap.L().Sync() // stdout 的 invalid argument 错误可安全忽略
+	_ = zap.L().Sync()
 }

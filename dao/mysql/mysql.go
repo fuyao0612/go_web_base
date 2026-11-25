@@ -13,6 +13,7 @@ import (
 // 它内部维护着多个连接，并发安全，可以被多个 goroutine 同时使用。
 var db *sql.DB
 
+// Init 按配置创建共享的 MySQL 连接池，验证数据库连通性并设置连接数上限。
 func Init() (err error) {
 	// DSN（Data Source Name）：数据库连接串，格式：
 	//   用户名:密码@tcp(主机地址:端口号)/数据库名?参数
@@ -20,7 +21,7 @@ func Init() (err error) {
 	//   charset=utf8mb4  -> 使用 utf8mb4 字符集，支持 emoji 和 4 字节字符
 	//   parseTime=True   -> 把 MySQL 的 DATE/DATETIME/TIMESTAMP 字段自动扫描成 Go 的 time.Time，
 	//                       否则会扫描成 []byte，Scan 到 time.Time 时会报错
-	//   loc=Local        -> 指定时区为本地时区，配合 parseTime 使用，避免时间偏移
+	//   loc=Local        -> 使用应用进程的本地时区解析 time.Time，不会修改数据库会话时区
 	dsn := fmt.Sprintf(
 		"%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
 		viper.GetString("mysql.user"),
@@ -35,8 +36,8 @@ func Init() (err error) {
 	// 所以这里返回 err 基本只会在 DSN 格式有误或驱动名写错时出现。
 	db, err = sql.Open("mysql", dsn)
 	if err != nil {
-		zap.L().Error("connect DB failed",zap.Error(err))
-		return 
+		zap.L().Error("connect DB failed", zap.Error(err))
+		return
 	}
 
 	// Ping 会真正向数据库发起一次连接测试，确认网络、账号、密码、库名是否正确。
@@ -57,4 +58,9 @@ func Init() (err error) {
 	// 一般 <= MaxOpenConns。
 	db.SetMaxIdleConns(viper.GetInt("mysql.max_idle_conns"))
 	return
+}
+
+// Close 在 Init 成功后用于关闭共享的 MySQL 连接池。
+func Close() {
+	_ = db.Close()
 }
