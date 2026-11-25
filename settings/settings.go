@@ -24,9 +24,10 @@ func Init()(err error){
 			return
 	}
 
+	// 开启监听：yaml 文件被修改并保存时自动触发回调
 	viper.WatchConfig()
-	viper.OnConfigchange(func(in fsnotify.Event)){
+	viper.OnConfigChange(func(in fsnotify.Event){
 		fmt.Println("配置文件修改了")
-	}
+	})
 	return
 }
